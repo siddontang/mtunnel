@@ -83,7 +83,7 @@ class ReverseProxy:
     def _recvForwardData(self, stream):
         url = '%s/forwardproxy?cid=%d' % (self._url, self._cid)
 
-        request = HTTPRequest(url)
+        request = HTTPRequest(url, request_timeout = 300)
 
         def callback(response):
             if response.error:

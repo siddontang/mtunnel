@@ -5,7 +5,7 @@ import tornado.ioloop
 import tornado.web
 
 import argparse
-
+import time
 from channel import ChannelMgr
 
 class ChannelHandler(tornado.web.RequestHandler):
@@ -33,6 +33,34 @@ class BaseProxyHandler(tornado.web.RequestHandler):
 
         return channel
 
+    def _post(self, buf):
+        print 'post', buf
+        buf.save(self.request.body)
+        self.finish()
+
+    def _get(self, buf):
+        print 'get', buf
+        hasData = False
+        while True:
+            data = buf.pop()
+            if not data:
+                break
+
+            self.write(data)
+            hasData = True
+
+        if hasData:
+            buf.setCallback(None)
+            self.finish()
+        else:
+            def callback(data):
+                print 'callback', len(data)
+                buf.setCallback(None)
+                self.write(data)
+                self.finish()
+    
+            buf.setCallback(callback)
+
 class ForwardProxyHandler(BaseProxyHandler):
     @tornado.web.asynchronous   
     def get(self):
@@ -40,22 +68,14 @@ class ForwardProxyHandler(BaseProxyHandler):
         if not channel:
             return
 
-        while True:
-            buf = channel.popFBuf()
-            if not buf:
-                break
-                
-            self.write(buf)
-
-        self.finish()
+        self._get(channel.getFBuf())
 
     def post(self):
         channel = self.checkChannel()
         if not channel:
             return
 
-        channel.saveFBuf(self.request.body)
-        self.finish()
+        self._post(channel.getFBuf())
 
 class ReverseProxyHandler(BaseProxyHandler):
     @tornado.web.asynchronous   
@@ -64,22 +84,14 @@ class ReverseProxyHandler(BaseProxyHandler):
         if not channel:
             return
 
-        while True:
-            buf = channel.popRBuf()
-            if not buf:
-                break
-
-            self.write(buf)
-
-        self.finish()
+        self._get(channel.getRBuf())
 
     def post(self):
         channel = self.checkChannel()
         if not channel:
             return
 
-        channel.saveRBuf(self.request.body)
-        self.finish()
+        self._post(channel.getRBuf())
 
 def parseArgs():
     parser = argparse.ArgumentParser()
@@ -106,6 +118,13 @@ def main():
     ])
 
     application.listen(port)
+
+    def onChannelCheck():
+        ChannelMgr().check()
+        tornado.ioloop.IOLoop.instance().add_timeout(int(time.time()) + 30, onChannelCheck)
+
+    tornado.ioloop.IOLoop.instance().add_timeout(int(time.time()) + 30, onChannelCheck)
+
     tornado.ioloop.IOLoop.instance().start()
 
 if __name__ == '__main__':

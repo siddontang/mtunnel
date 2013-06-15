@@ -89,6 +89,8 @@ class ForwardProxy(TCPServer):
     def _recvReverseData(self, stream):
         url = '%s/reverseproxy?cid=%d' % (self._url, self._cid)
 
+        request = HTTPRequest(url, request_timeout = 300)
+
         def callback(response):
             if response.error:
                 print 'recv data error %s, exit!' % response.error
@@ -102,7 +104,7 @@ class ForwardProxy(TCPServer):
                     IOLoop.instance().add_timeout(time.time() + 1, _callback)
 
 
-        self._client.fetch(url, callback)        
+        self._client.fetch(request, callback)        
 
 class Object:
     pass

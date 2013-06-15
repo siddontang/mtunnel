@@ -8,57 +8,43 @@ import time
 
 ChannelKeepAlive = 300
 
+class Buffer:
+    def __init__(self, channel):
+        self._buf = deque()
+        self._callback = None
+        self._channel = channel
+
+    def save(self, data):
+        if self._callback:
+            self._callback(data)
+        else:
+            self._buf.append(data)
+
+        self._channel.update()
+
+    def pop(self):
+        self._channel.update()
+
+        try:
+            return self._buf.popleft()
+        except:
+            return None
+
+    def setCallback(self, callback):
+        self._callback = callback
+
 class Channel:
     def __init__(self, now):
         self._expiredTime = now + ChannelKeepAlive
 
-        self._fbuf = deque()
-        self._rbuf = deque()
+        self._fbuf = Buffer(self)
+        self._rbuf = Buffer(self)
 
     def update(self):
         self._expiredTime = int(time.time()) + ChannelKeepAlive
 
     def timeout(self, expTime):
         return self._expiredTime < expTime
-
-    def saveFBuf(self, data):
-        self._fbuf.append(data)
-
-        self.update()
-
-    def saveRBuf(self, data):
-        self._rbuf.append(data)
-
-        self.update()
-
-    def popFBuf(self):
-        self.update()
-
-        try:
-            return self._fbuf.popleft()
-        except:
-            return None
-
-    def popRBuf(self):
-        self.update()
-
-        try:
-            return self._rbuf.popleft()
-        except:
-            return None
-
-    def save(self, data, queue):
-        queue.append(data)
-
-        self.update()
-
-    def pop(self, queue):
-        self.update()
-
-        try:
-            return queue.popleft()
-        except:
-            return None
 
     def getFBuf(self):
         return self._fbuf
