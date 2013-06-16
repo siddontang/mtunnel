@@ -6,7 +6,7 @@ from collections import deque
 
 import time
 
-ChannelKeepAlive = 300
+ChannelKeepAlive = 3600
 
 class Buffer:
     def __init__(self, channel):
