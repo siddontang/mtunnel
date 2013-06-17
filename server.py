@@ -34,17 +34,16 @@ class BaseProxyHandler(tornado.web.RequestHandler):
         return channel
 
     def _post(self, buf):
-        print 'post', buf
         buf.save(self.request.body)
         self.finish()
 
     def _get(self, buf):
-        print 'get', buf
         hasData = False
         while True:
             data = buf.pop()
             if not data:
                 break
+
 
             self.write(data)
             hasData = True
@@ -54,7 +53,6 @@ class BaseProxyHandler(tornado.web.RequestHandler):
             self.finish()
         else:
             def callback(data):
-                print 'callback', len(data)
                 buf.setCallback(None)
                 self.write(data)
                 self.finish()
@@ -112,8 +110,8 @@ def main():
     print 'begin to listen port %d' % (port)
 
     application = tornado.web.Application([
-        (r'/forwardproxy', ForwardProxyHandler),
-        (r'/reverseproxy', ReverseProxyHandler),
+        (r'/forwardflow', ForwardProxyHandler),
+        (r'/reverseflow', ReverseProxyHandler),
         (r'/channel', ChannelHandler),
     ])
 

@@ -3,15 +3,18 @@
 
 import argparse
 import time
+import sys
 
 from tornado.ioloop import IOLoop
-from tornado.httpclient import AsyncHTTPClient
+from tornado.httpclient import AsyncHTTPClient, HTTPClient
 from tornado.httpclient import HTTPRequest
 
 try:
     from tornado.tcpserver import TCPServer
 except:
     from tornado.netutil import TCPServer
+
+from misc import ActionType
 
 def parseArgs():
     parser = argparse.ArgumentParser()
@@ -32,23 +35,15 @@ def parseArgs():
 
     return args
 
-def checkChannel(env):
-    config = env.config
-    client = env.client
-
-    url = '%s://%s/channel?cid=%d' % (config.protocol, config.server, config.channel)
-    
-    def callback(response):
-        if response.error:
-            print 'channel id %d is invalid, exit!' % (config.channel)
-            IOLoop.instance().stop()
-
-    client.fetch(url, callback)
-
 class ForwardProxy(TCPServer):
     def __init__(self, env):
         self._env = env
-        self._client = env.client
+        
+        self._client = AsyncHTTPClient()
+
+        self._syncClient = HTTPClient()
+
+
         config = env.config
 
         self._cid = config.channel
@@ -56,62 +51,79 @@ class ForwardProxy(TCPServer):
 
         TCPServer.__init__(self)
 
+    def checkChannel(self):
+        url = '%s/channel?cid=%d' % (self._url, self._cid)
+        
+        response = self._syncClient.fetch(url)
+
+        if response.error:
+            print 'channel id %d is invalid, exit!' % (self._cid)
+            sys.exit(2)
+
     def handle_stream(self, stream, address):
+        self._sendToRelay(stream, ActionType.Connect, '')
+
         def streamingCallback(data):
             print 'streamingCallback data len: %d' % (len(data))
 
             if len(data) > 0:
-                self._sendForwardData(stream, data)
+                self._sendToRelay(stream, ActionType.Data, data)
 
             stream.read_bytes(1024, None, streamingCallback)
 
         def closeCallback():
-            print 'connection was closed, exit!'
-            IOLoop.instance().stop()            
+            print 'connection was closed!'
 
         stream.set_close_callback(closeCallback)
         stream.read_bytes(1024, None, streamingCallback)
 
-    def _sendForwardData(self, stream, data):
-        url = '%s/forwardproxy?cid=%d' % (self._url, self._cid)
+    def _sendToRelay(self, stream, actionType, data):
+        url = '%s/forwardflow?cid=%d' % (self._url, self._cid)
 
-        request = HTTPRequest(url, method = 'POST', body = data)
+        body = '%04d%1d%s' % (len(data), actionType, data)
+        request = HTTPRequest(url, method = 'POST', body = body)
 
         def callback(response):
             if response.error:
                 print 'forward data error %s, exit!' % response.error
                 IOLoop.instance().stop()
             else:
-                self._recvReverseData(stream)
+                self._recvFromRelay(stream)
 
         self._client.fetch(request, callback)
 
-    def _recvReverseData(self, stream):
-        url = '%s/reverseproxy?cid=%d' % (self._url, self._cid)
+    def _recvFromRelay(self, stream):
+        url = '%s/reverseflow?cid=%d' % (self._url, self._cid)
 
-        request = HTTPRequest(url, request_timeout = 300)
+        request = HTTPRequest(url, request_timeout = 3600)
 
         def callback(response):
             if response.error:
-                print 'recv data error %s, exit!' % response.error
+                print 'recv from relay error %s!' % response.error
             else:
-                if response.body:
-                    stream.write(response.body)
-                else:
-                    def _callback():
-                        self._recvReverseData(stream)
+                body = response.body
+                while body:
+                    length = int(body[0:4])
+                    actionType = int(body[4])
+                    if actionType == ActionType.Data:
+                        data = body[5:5 + length]
+                        stream.write(data)
+                    elif actionType == ActionType.Error:
+                        print 'some error occur, exit!'
+                        sys.exit(2)
 
-                    IOLoop.instance().add_timeout(time.time() + 1, _callback)
+                    body = body[5 + length:]
 
+                self._recvFromRelay(stream)
 
         self._client.fetch(request, callback)        
+
 
 class Object:
     pass
 
 def main():
     env = Object()
-    env.client = AsyncHTTPClient()
 
     args = parseArgs()
 
@@ -126,9 +138,10 @@ def main():
     print 'server address %s' % server
 
     application = ForwardProxy(env)
-    application.listen(port)
 
-    checkChannel(env)
+    application.checkChannel()
+    
+    application.listen(port)
 
     IOLoop.instance().start()
 

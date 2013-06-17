@@ -8,8 +8,10 @@ import sys
 
 from tornado.ioloop import IOLoop
 from tornado.iostream import IOStream
-from tornado.httpclient import AsyncHTTPClient
+from tornado.httpclient import AsyncHTTPClient, HTTPClient
 from tornado.httpclient import HTTPRequest
+
+from misc import ActionType
 
 def parseArgs():
     parser = argparse.ArgumentParser()
@@ -30,40 +32,33 @@ def parseArgs():
 
     return args
 
+class ReverseProxy:
+    def __init__(self, env):
+        self._env = env
+        self._client = AsyncHTTPClient()
+        self._syncClient = HTTPClient()
 
-def requestChannel(env):
-    config = env.config
-    client = env.client
+        config = env.config
 
-    url = '%s://%s/channel' % (config.protocol, config.server)
-    
-    def callback(response):
+        self._url = '%s://%s' % (config.protocol, config.server)
+
+    def requestChannel(self):
+        url = '%s/channel' % (self._url)
+        request = HTTPRequest(url, method = 'POST', body = '')
+        response = self._syncClient.fetch(request)
+
         if response.error:
             print 'requestChannel error %s, exit!' % (response.error)
             sys.exit(2)
         else:
             cid = int(response.body)
-            env.cid = cid
+            self._cid = cid
             print 'channel id is %d' % (cid)
 
-        IOLoop.instance().stop()
+    def start(self):
+        self._recvFromRelay(None)
 
-    request = HTTPRequest(url, method = 'POST', body = '')
-    client.fetch(request, callback)
-
-    IOLoop.instance().start()
-
-
-class ReverseProxy:
-    def __init__(self, env):
-        self._env = env
-        self._client = env.client
-        config = env.config
-        self._cid = env.cid
-
-        self._url = '%s://%s' % (config.protocol, config.server)
-
-    def connect(self):
+    def _connect(self):
         host = self._env.config.host
         port = self._env.config.port
 
@@ -71,49 +66,59 @@ class ReverseProxy:
         stream = IOStream(s)
 
         def callback():
-            print 'connect ok, begin to recv forward data'
-            self._recvForwardData(stream)
+            print 'connect ok, begin to recv data'
+            self._recvData(stream)
+
+            self._recvFromRelay(stream)
 
         def closeCallback():
-            print 'connection was closed, exit!'
-            IOLoop.instance().stop()            
+            print 'connection was closed!'
 
+        stream.set_close_callback(closeCallback)
         stream.connect((host, port), callback)
 
-    def _recvForwardData(self, stream):
-        url = '%s/forwardproxy?cid=%d' % (self._url, self._cid)
+    def _sendToRelay(self, stream, actionType, data):
+        url = '%s/reverseflow?cid=%d' % (self._url, self._cid)
 
-        request = HTTPRequest(url, request_timeout = 300)
-
-        def callback(response):
-            if response.error:
-                print 'recv forward data error %s, exit!' % (response.error)
-                IOLoop.instance().stop()
-            else:
-                if response.body:
-                    stream.write(response.body)
-
-                    self._recvData(stream)
-                else:
-                    def _callback():
-                        self._recvForwardData(stream)
-
-                    IOLoop.instance().add_timeout(time.time() + 1, _callback)
-
-
-        self._client.fetch(request, callback)
-
-    def _sendReverseData(self, stream, data):
-        url = '%s/reverseproxy?cid=%d' % (self._url, self._cid)
-
-        request = HTTPRequest(url, method = 'POST', body = data)
+        body = '%04d%1d%s' % (len(data), actionType, data)
+        request = HTTPRequest(url, method = 'POST', body = body)
 
         def callback(response):
             if response.error:
                 print 'forward data error %s, exit!' % response.error
                 IOLoop.instance().stop()
             else:
-                self._recvForwardData(stream)
+                self._recvFromRelay(stream)
+
+        self._client.fetch(request, callback)
+
+    def _recvFromRelay(self, stream):
+        url = '%s/forwardflow?cid=%d' % (self._url, self._cid)
+
+        request = HTTPRequest(url, request_timeout = 1800)
+
+        def callback(response):
+            if response.error:
+                print 'recv forward data error %s, exit!' % (response.error)
+                IOLoop.instance().stop()
+                sys.exit(2)
+            else:
+                body = response.body
+                while body:
+                    length = int(body[0:4])
+                    actionType = int(body[4])
+                    if actionType == ActionType.Connect:
+                        self._connect()
+                    elif actionType == ActionType.Data:
+                        data = body[5:5 + length]
+                        stream.write(data)
+                        self._recvData(stream)
+                        self._recvFromRelay(stream)
+                    elif actionType == ActionType.Error:
+                        print 'some error occur, exit!'
+                        sys.exit(2)
+
+                    body = body[5 + length:]
 
         self._client.fetch(request, callback)
 
@@ -122,7 +127,7 @@ class ReverseProxy:
             print 'streamingCallback data len: %d' % (len(data))
 
             if len(data) > 0:
-                self._sendReverseData(stream, data)
+                self._sendToRelay(stream, ActionType.Data, data)
 
             stream.read_bytes(1024, None, streamingCallback)
 
@@ -133,7 +138,6 @@ class Object:
 
 def main():
     env = Object()
-    env.client = AsyncHTTPClient()
 
     args = parseArgs()
 
@@ -148,10 +152,10 @@ def main():
 
     print 'server address %s' % server
 
-    requestChannel(env)
-
     application = ReverseProxy(env)
-    application.connect()
+    application.requestChannel()
+
+    application.start()
 
     IOLoop.instance().start()
 
