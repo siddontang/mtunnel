@@ -8,13 +8,15 @@ import sys
 from tornado.ioloop import IOLoop
 from tornado.httpclient import AsyncHTTPClient, HTTPClient
 from tornado.httpclient import HTTPRequest
-
+        
 try:
     from tornado.tcpserver import TCPServer
 except:
     from tornado.netutil import TCPServer
 
 from misc import ActionType
+
+MAX_READ_BYTES = 1024 * 1024
 
 def parseArgs():
     parser = argparse.ArgumentParser()
@@ -49,6 +51,8 @@ class ForwardProxy(TCPServer):
         self._cid = config.channel
         self._url = '%s://%s' % (config.protocol, config.server)
 
+        self._hangUp = False
+
         TCPServer.__init__(self)
 
     def checkChannel(self):
@@ -63,41 +67,49 @@ class ForwardProxy(TCPServer):
     def handle_stream(self, stream, address):
         self._sendToRelay(stream, ActionType.Connect, '')
 
-        def streamingCallback(data):
-            print 'streamingCallback data len: %d' % (len(data))
+        def callback(data):
+            print 'callback data len: %d' % (len(data))
 
             if len(data) > 0:
                 self._sendToRelay(stream, ActionType.Data, data)
 
-            stream.read_bytes(1024, None, streamingCallback)
+            stream.read_bytes(MAX_READ_BYTES, None, callback)
 
         def closeCallback():
             print 'connection was closed!'
 
         stream.set_close_callback(closeCallback)
-        stream.read_bytes(1024, None, streamingCallback)
+        stream.read_bytes(MAX_READ_BYTES, None, callback)
 
     def _sendToRelay(self, stream, actionType, data):
         url = '%s/forwardflow?cid=%d' % (self._url, self._cid)
-
+        print 'sendToRelay', actionType, len(data)
+        
         body = '%04d%1d%s' % (len(data), actionType, data)
         request = HTTPRequest(url, method = 'POST', body = body)
 
         def callback(response):
             if response.error:
-                print 'forward data error %s, exit!' % response.error
+                print 'send to relay error %s, exit!' % response.error
                 IOLoop.instance().stop()
             else:
                 self._recvFromRelay(stream)
 
         self._client.fetch(request, callback)
 
-    def _recvFromRelay(self, stream):
-        url = '%s/reverseflow?cid=%d' % (self._url, self._cid)
 
+    def _recvFromRelay(self, stream):
+        if self._hangUp:
+            return
+
+        self._hangUp = True
+
+        url = '%s/reverseflow?cid=%d' % (self._url, self._cid)
+        
         request = HTTPRequest(url, request_timeout = 3600)
 
         def callback(response):
+            self._hangUp = False
             if response.error:
                 print 'recv from relay error %s!' % response.error
             else:

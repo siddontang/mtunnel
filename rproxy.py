@@ -13,6 +13,8 @@ from tornado.httpclient import HTTPRequest
 
 from misc import ActionType
 
+MAX_READ_BYTES = 1024 * 1024
+
 def parseArgs():
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', '-host', dest = 'host',
@@ -40,6 +42,7 @@ class ReverseProxy:
 
         config = env.config
 
+        self._hangUp = False
         self._url = '%s://%s' % (config.protocol, config.server)
 
     def requestChannel(self):
@@ -93,11 +96,18 @@ class ReverseProxy:
         self._client.fetch(request, callback)
 
     def _recvFromRelay(self, stream):
+        if self._hangUp:
+            return
+
+        self._hangUp = True
+
         url = '%s/forwardflow?cid=%d' % (self._url, self._cid)
 
         request = HTTPRequest(url, request_timeout = 1800)
 
         def callback(response):
+            self._hangUp = False
+            
             if response.error:
                 print 'recv forward data error %s, exit!' % (response.error)
                 IOLoop.instance().stop()
@@ -123,15 +133,15 @@ class ReverseProxy:
         self._client.fetch(request, callback)
 
     def _recvData(self, stream):
-        def streamingCallback(data):
-            print 'streamingCallback data len: %d' % (len(data))
+        def callback(data):
+            print 'callback data len: %d' % (len(data))
 
             if len(data) > 0:
                 self._sendToRelay(stream, ActionType.Data, data)
 
-            stream.read_bytes(1024, None, streamingCallback)
+            stream.read_bytes(MAX_READ_BYTES, None, callback)
 
-        stream.read_bytes(1024, None, streamingCallback)
+        stream.read_bytes(MAX_READ_BYTES, None, callback)
 
 class Object:
     pass
